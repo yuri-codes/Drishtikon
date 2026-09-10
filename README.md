@@ -1,119 +1,71 @@
-# Dual-Loop AI Sighted Guide (Prototype)
+# Drishtikon: Dual-Loop AI Sighted Guide (Prototype)
 
-A desktop prototype that plays back a pre-recorded MP4 as if it were a live
-camera feed, and runs two concurrent AI "loops" over it to assist a blind or
-low-vision user: a fast **Reflex Loop** for immediate obstacle avoidance and
-a slower **Cognitive Loop** for richer environmental description, both
-spoken aloud through Rime AI.
+Drishtikon is a voice-native, cross-platform accessibility prototype designed to act as an Orientation & Mobility (O&M) guide for blind or low-vision users. It processes a live-camera feed and uses a dual-loop AI architecture to provide real-time spatial awareness and contextual scene descriptions, spoken entirely through Rime AI.
+ It features a fast **Reflex Loop** for immediate obstacle avoidance, a slower **Cognitive Loop** for richer environmental description, and a **Query Loop** for wake-word-gated spoken questions. Rime AI provides the primary spoken output, ensuring voice is essential to the navigation and situational awareness experience.
 
 ## Architecture
 
-```
+```text
                     ┌─────────────────────┐
-                    │   video_reader_task  │  cv2.VideoCapture, throttled to
-                    │   (main.py)          │  native FPS via asyncio.sleep
-                    └──────────┬───────────┘
+                    │  video_reader_task  │
+                    └──────────┬──────────┘
                                │ frame + timestamp
                  ┌─────────────┴─────────────┐
                  ▼                           ▼
       ┌────────────────────┐      ┌────────────────────┐
-      │   Reflex Loop       │      │   SharedState       │
-      │  (reflex_loop.py)   │      │  (shared_state.py)  │
-      │  YOLO track() every │      │  latest frame, for  │
-      │  frame -> TTC/hazard│      │  the Cognitive Loop │
-      └──────────┬──────────┘      └──────────┬──────────┘
-                 │ CRITICAL_HAZARD             │ every 3s
-                 ▼                             ▼
-         hazard_queue                ┌────────────────────┐
-                 │                   │  Cognitive Loop     │
-                 │                   │ (cognitive_loop.py) │
-                 │                   │  VLM O&M prompt      │
-                 │                   └──────────┬──────────┘
-                 │                              │ AMBIENT
-                 │                              ▼
-                 │                       ambient_queue
-                 ▼                              │
-        ┌─────────────────────────────────────┴─┐
-        │        RimeAudioOutput (audio_output.py)│
-        │  hazards preempt ambient speech via      │
-        │  {"operation": "clear"} + fresh contextId│
-        │  persistent wss://users-ws.rime.ai/ws3   │
-        │  -> PyAudio real-time PCM playback        │
-        └───────────────────────────────────────┘
+      │    Reflex Loop     │      │    SharedState     │
+      └──────────┬─────────┘      └──────┬──────┬──────┘
+                 │ CRITICAL_HAZARD       │      │
+                 ▼              every 3s ▼      ▼ on wake word
+         hazard_queue◄────────┐   ┌─────────┐ ┌─────────────┐
+                 │            │   │Cognitive│ │ Query Loop  │
+                 │            │   └────┬────┘ └──────┬──────┘
+                 │            │        │AMBIENT      │QUERY_RESPONSE
+                 ▼            └────────┘             ▼
+        ┌─────────────────────────────────────────────────────┐
+        │        RimeAudioOutput (audio_output.py)            │
+        │  priority: hazard > query > ambient                 │
+        └─────────────────────────────────────────────────────┘
 ```
 
-- **Reflex Loop** (every frame): `ultralytics` YOLO tracking gives each
-  object a stable ID. For objects inside the center "walking path" zone,
-  it estimates time-to-collision from how fast the box is growing
-  (Lee's tau / optical-expansion heuristic) and fires `CRITICAL_HAZARD`
-  when TTC drops below `TTC_THRESHOLD_SEC`.
-- **Cognitive Loop** (every `COGNITIVE_INTERVAL_SEC`): sends the current
-  frame to a VLM (GPT-4o-mini or Gemini 1.5 Flash) with a fixed O&M system
-  prompt, and reminds the model what it already described recently so it
-  doesn't re-narrate the same parked car every cycle.
-- **Audio Output**: one persistent Rime AI `/ws3` connection. Hazards always
-  preempt ambient speech: they send `{"operation": "clear"}` and claim a
-  fresh `contextId`; the receiver only plays audio chunks tagged with the
-  currently active `contextId`, so stale ambient audio can't bleed into a
-  hazard warning.
+
+### Architecture
+The system runs four concurrent `asyncio` tasks:
+1. **Reflex Loop (High-Frequency):** Runs YOLO object tracking on every frame to estimate Time-To-Collision (TTC).
+2. **Cognitive Loop (Adaptive Cadence):** Throttles Vision Language Model (VLM) calls based on scene-change metrics, providing environmental descriptions only when necessary to prevent redundant narration.
+3. **Query Loop (Continuous Listening):** A wake-word-gated microphone stream that captures user queries, transcribes them, and grounds the VLM's answer in the current camera frame.
+4. **Audio Output:** A persistent Rime AI WebSocket connection that prioritizes hazards over user queries, and queries over ambient descriptions.
+
+### Third-Party Services
+* **Rime AI:** Primary Text-to-Speech (TTS) engine.
+* **Ultralytics (YOLOv8/11):** Local object tracking and bounding box generation.
+* **OpenAI (GPT-4o-mini) / Google (Gemini):** Vision Language Models for scene description.
+* **Groq (Whisper-large-v3-turbo):** Fast audio transcription.
+* **openWakeWord & webrtcvad:** Wake-word detection and Voice Activity Detection (VAD).
+
+### Rime Integration Details
+* **Model ID:** `mistv3`[cite: 14]
+* **Speaker:** `cove`[cite: 14]
+* **Language:** English[cite: 14]
+* **Endpoint:** `wss://users-ws.rime.ai/ws3`[cite: 14]
+* **Audio Format:** `pcm` (16-bit upmixed to stereo via PyAudio)[cite: 14]
+* **Transport:** WebSocket[cite: 14]
+
+### Setup Instructions
+1. `pip install -r requirements.txt` (Ensure PortAudio is installed at the OS level for PyAudio).
+2. Copy `.env.example` to `.env` and insert your API keys (Rime, Groq, OpenAI/Gemini).
+3. Run `python main.py` with a valid `VIDEO_PATH` environment variable.
+
+### Known Limitations
+* **Monocular TTC:** Time-To-Collision relies on optical expansion of bounding boxes rather than true depth sensors, making it an approximation.
+* **No Acoustic Echo Cancellation (AEC):** The system relies on a software gate to pause listening while speaking, meaning true "barge-in" interruption via voice is not supported.
+
+### Failure Behavior
+The system defaults to visible fallbacks[cite: 14]. If the VLM or Query loops fail repeatedly (e.g., network drop), the system injects a `SYSTEM_STATUS` message into the hazard queue (e.g., "Scene description is unavailable right now"). Silence is never allowed to be mistakenly interpreted as an "all clear" state.
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # fill in real keys, or export the vars directly
+cp .env.example .env   # fill in real keys, ensuring no secrets are committed
 ```
-
-PyAudio needs PortAudio installed at the OS level:
-- macOS: `brew install portaudio`
-- Debian/Ubuntu: `sudo apt install portaudio19-dev`
-- Windows: PyAudio wheels bundle PortAudio, usually no extra step needed.
-
-The first run of `main.py` will download the YOLO weights (`yolov8n.pt` by
-default) via `ultralytics` if not already present locally.
-
-## Run
-
-```bash
-export RIME_API_KEY=...
-export OPENAI_API_KEY=...        # or set VLM_PROVIDER=gemini and GEMINI_API_KEY
-export VIDEO_PATH=/path/to/your/walk.mp4
-python main.py
-```
-
-A debug window (bounding boxes, color-coded by hazard level, plus the
-center "walking zone" lines) shows by default; set `SHOW_DEBUG_WINDOW=false`
-to run headless. Press `q` in the debug window to quit early.
-
-## Known approximations / where this needs more work before real-world use
-
-- **TTC is monocular and unitless in real distance.** Without stereo/depth,
-  "time to collision" here is really "rate the object is filling more of
-  the frame," which correlates with approach speed but isn't a calibrated
-  physical measurement. Tune `TTC_THRESHOLD_SEC`, `MIN_BOX_AREA_RATIO`, and
-  `CENTER_ZONE_RATIO` against real footage before trusting it.
-- **Cognitive Loop dedup is a prompt nudge, not a hard filter.** It works
-  well in practice but an embedding-similarity check between consecutive
-  descriptions would be more robust for a production build.
-- **Rime `/ws3` keeps only one active context at a time**, per Rime's own
-  docs -- our context-ID filtering is a client-side safety net on top of
-  that, not a replacement for testing real interruption behavior end to
-  end with your Rime account/voice.
-- **This is a research prototype, not a certified mobility aid.** It has
-  not been validated against the reliability, latency, and failure-mode
-  standards required to replace a white cane, guide dog, or O&M
-  professional's training. Treat it as a supplementary information
-  channel during testing, with a human safety net, until it has been
-  rigorously evaluated by O&M specialists and real users.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `main.py` | Orchestrates the video reader + both async loops |
-| `config.py` | All environment-variable-driven settings |
-| `shared_state.py` | Thread/task-safe "latest frame" holder |
-| `reflex_loop.py` | YOLO tracking, center-zone TTC math, hazard triggering |
-| `cognitive_loop.py` | Periodic VLM call + description history |
-| `vlm_client.py` | OpenAI / Gemini VLM API wrapper |
-| `audio_output.py` | Rime AI `/ws3` websocket + PyAudio playback |

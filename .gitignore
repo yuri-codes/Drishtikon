@@ -1,0 +1,21 @@
+# Security
+.env
+
+# Python Environments & Bytecode
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & OS Specific
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Video Fixtures (ignores all except an explicit stress test file)
+*.mp4
+*.mov
+!stress_test.mp4
