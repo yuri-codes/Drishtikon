@@ -69,3 +69,9 @@ The system defaults to visible fallbacks[cite: 14]. If the VLM or Query loops fa
 pip install -r requirements.txt
 cp .env.example .env   # fill in real keys, ensuring no secrets are committed
 ```
+
+## Demo Video link
+[Demo Link with description](https://drive.google.com/drive/folders/1ydXjf3XvsrcwwJg5ARN78y2JedTciECu?usp=drive_link)
+
+## Repo link
+[GitHub Repo](https://github.com/yuri-codes/Drishtikon)
